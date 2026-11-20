@@ -54,6 +54,8 @@ pub struct RenderRequest<'a> {
     pub roi: Option<Roi>,
     pub hsl_probe: bool,
     pub motion_blur: crate::effects::motion_blur::MotionBlurs,
+    /// User shader passes applied after everything else; empty = none.
+    pub user_passes: crate::render::user_shaders::gpu::UserPassStack,
 }
 
 fn read_texture_data_roi(
@@ -195,6 +197,7 @@ pub struct GpuProcessor {
     >,
 
     high_precision_tile: std::sync::OnceLock<HighPrecisionTile>,
+    user_pass_textures: std::sync::OnceLock<crate::render::user_shaders::gpu::PassTextures>,
     tile_output_size: wgpu::Extent3d,
     adjustments_buffer: wgpu::Buffer,
     mask_cache: std::sync::Mutex<Option<MaskCache>>,
@@ -451,6 +454,7 @@ impl GpuProcessor {
             blur_params_buffer,
             light_cache: std::sync::Mutex::new(None),
             high_precision_tile: std::sync::OnceLock::new(),
+            user_pass_textures: std::sync::OnceLock::new(),
             tile_output_size: clamped_tile_size,
             adjustments_buffer,
             mask_cache: std::sync::Mutex::new(None),
@@ -1333,6 +1337,47 @@ impl GpuProcessor {
         })
     }
 
+    /// The `user_encode` entry point of the main shader, compiled for the given output
+    /// precision. It turns the last user pass's linear sRGB back into the output encoding.
+    fn user_encode_pipeline(&self, high_precision: bool) -> &wgpu::ComputePipeline {
+        let user_passes = &self.pipelines.user_passes;
+        let create = |label, layout: &wgpu::PipelineLayout, module, constants: &[(&str, f64)]| {
+            self.context
+                .device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(layout),
+                    module,
+                    entry_point: Some("user_encode"),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants,
+                        ..Default::default()
+                    },
+                    cache: None,
+                })
+        };
+        if high_precision {
+            user_passes.encode_high_precision.get_or_init(|| {
+                let hp = self.high_precision_pipeline();
+                create(
+                    "User Encode Pipeline (high precision)",
+                    &hp.layout,
+                    &hp.shader,
+                    &[("HIGH_PRECISION_OUTPUT", 1.0)],
+                )
+            })
+        } else {
+            user_passes.encode_8bit.get_or_init(|| {
+                create(
+                    "User Encode Pipeline",
+                    &self.pipelines.main_pipeline_layout,
+                    &self.pipelines.main_shader_module,
+                    &[],
+                )
+            })
+        }
+    }
+
     fn high_precision_tile(&self) -> &HighPrecisionTile {
         self.high_precision_tile.get_or_init(|| {
             let texture = self
@@ -1388,6 +1433,27 @@ impl GpuProcessor {
         if request.lut.is_none() {
             request.adjustments.global.has_lut = 0;
         }
+
+        // User shader passes: when any compile, the main shader stops before its output
+        // transform and writes linear sRGB into a float texture; the passes run on that,
+        // and `user_encode` applies the output transform into the usual tile texture.
+        let user_passes = if request.hsl_probe {
+            Vec::new()
+        } else {
+            self.pipelines
+                .user_passes
+                .prepare(&self.context, &request.user_passes)
+        };
+        let user_pass_textures = (!user_passes.is_empty()).then(|| {
+            self.user_pass_textures.get_or_init(|| {
+                crate::render::user_shaders::gpu::PassTextures::new(
+                    &self.context.device,
+                    self.tile_output_size,
+                )
+            })
+        });
+        request.adjustments.global.user_pass_mode = user_pass_textures.is_some() as u32;
+
         let input_texture_view = &input.texture_view;
         let gf_coeffs_view = &input.gf_coeffs_view;
         let tone_base_view = &input.tone_base_view;
@@ -1409,7 +1475,7 @@ impl GpuProcessor {
             self.hsl_probe_pipeline().clone()
         } else {
             self.main_pipeline_for(
-                high_precision_tile.is_some(),
+                high_precision_tile.is_some() || user_pass_textures.is_some(),
                 shader_features(&request.adjustments),
             )
         };
@@ -1430,6 +1496,11 @@ impl GpuProcessor {
                     4,
                 )
             };
+        // Where the main shader writes: the tile texture, or the first user pass texture.
+        let (main_bgl, main_output_view) = match user_pass_textures {
+            Some(textures) => (&self.high_precision_pipeline().bgl, &textures.views[0]),
+            None => (output_bgl, output_tile_view),
+        };
 
         let bounds = request.roi.unwrap_or(Roi {
             x: 0,
@@ -1635,7 +1706,7 @@ impl GpuProcessor {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(output_tile_view),
+                        resource: wgpu::BindingResource::TextureView(main_output_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -1698,7 +1769,7 @@ impl GpuProcessor {
 
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("Tile Bind Group"),
-                    layout: output_bgl,
+                    layout: main_bgl,
                     entries: &bind_group_entries,
                 });
 
@@ -1706,6 +1777,45 @@ impl GpuProcessor {
                     let mut compute_pass = main_encoder.begin_compute_pass(&Default::default());
                     compute_pass.set_pipeline(&output_pipeline);
                     compute_pass.set_bind_group(0, &bind_group, &[]);
+                    compute_pass.dispatch_workgroups(
+                        input_width.div_ceil(8),
+                        input_height.div_ceil(8),
+                        1,
+                    );
+                }
+
+                if let Some(textures) = user_pass_textures {
+                    let last = self.pipelines.user_passes.record(
+                        &self.context,
+                        &mut main_encoder,
+                        &user_passes,
+                        textures,
+                        crate::render::user_shaders::gpu::TileInfo {
+                            image_size: (width, height),
+                            origin: (input_x_start, input_y_start),
+                            size: (input_width, input_height),
+                            scale: scale.max(0.1),
+                            hdr_headroom: adjustments.global.hdr_headroom,
+                            is_preview: request.user_passes.is_preview,
+                            is_raw: adjustments.global.is_raw_image == 1,
+                        },
+                    );
+
+                    // Same bindings as the main dispatch, except it reads the last pass
+                    // and writes the real output tile.
+                    bind_group_entries[0].resource =
+                        wgpu::BindingResource::TextureView(&textures.views[last]);
+                    bind_group_entries[1].resource =
+                        wgpu::BindingResource::TextureView(output_tile_view);
+                    let encode_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("User Encode Bind Group"),
+                        layout: output_bgl,
+                        entries: &bind_group_entries,
+                    });
+                    let mut compute_pass = main_encoder.begin_compute_pass(&Default::default());
+                    compute_pass
+                        .set_pipeline(self.user_encode_pipeline(output_precision.is_high()));
+                    compute_pass.set_bind_group(0, &encode_bind_group, &[]);
                     compute_pass.dispatch_workgroups(
                         input_width.div_ceil(8),
                         input_height.div_ceil(8),

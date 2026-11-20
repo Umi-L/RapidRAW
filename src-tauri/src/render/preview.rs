@@ -307,6 +307,7 @@ pub struct EditorRender {
     mask_cache_key: u64,
     lut: Option<Arc<crate::adjustments::lut_processing::Lut>>,
     motion_blur: crate::effects::motion_blur::MotionBlurs,
+    user_passes: crate::render::user_shaders::gpu::UserPassStack,
 }
 
 impl EditorRender {
@@ -359,6 +360,10 @@ impl EditorRender {
                 crop_offset,
                 full_w.max(full_h) as f32 * scale,
             ),
+            user_passes: crate::render::user_shaders::gpu::UserPassStack::from_adjustments(
+                adjustments,
+                true,
+            ),
         }
     }
 
@@ -375,6 +380,7 @@ impl EditorRender {
             roi,
             hsl_probe,
             motion_blur: self.motion_blur.clone(),
+            user_passes: self.user_passes.clone(),
         }
     }
 }

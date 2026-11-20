@@ -244,6 +244,18 @@
       "size": "Size",
       "spatial": "Spatial",
       "vignette": "Vignette"
+    },
+    "shaders": {
+      "addPass": "Add pass…",
+      "empty": "Add a pass to run your own WGSL shader after all other edits.",
+      "hint": "Runs after all other edits, top to bottom.",
+      "missingFile": "{{file}} is not in the shaders folder.",
+      "moveDown": "Move down",
+      "moveUp": "Move up",
+      "noShaders": "No .wgsl files in the shaders folder yet.",
+      "openFolder": "Open shaders folder",
+      "reload": "Reload shaders from disk",
+      "remove": "Remove pass"
     }
   },
   "contextMenus": {
@@ -449,7 +461,8 @@
         "color": "Color",
         "curves": "Curves",
         "details": "Details",
-        "effects": "Effects"
+        "effects": "Effects",
+        "shaders": "Shaders"
       },
       "title": "Adjustments",
       "tooltips": {
@@ -1606,6 +1619,7 @@
         "noiseReduction": "Noise Reduction",
         "presence": "Presence",
         "relight": "Relight",
+        "shaderPasses": "Shader Passes",
         "sharpness": "Sharpness",
         "transformRotation": "Transform & Rotation",
         "vignette": "Vignette",

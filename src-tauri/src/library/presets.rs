@@ -138,6 +138,7 @@ pub async fn generate_preset_preview(
                 lut,
                 roi: None,
                 hsl_probe: false,
+                user_passes: crate::render::user_shaders::gpu::UserPassStack::from_adjustments(&js_adjustments, false),
                 motion_blur: crate::effects::motion_blur::MotionBlurs::new(
                     &loaded_image.path,
                     &js_adjustments,
@@ -342,6 +343,7 @@ pub async fn generate_all_community_previews(
                             lut,
                             roi: None,
                             hsl_probe: false,
+                            user_passes: crate::render::user_shaders::gpu::UserPassStack::from_adjustments(&scaled_adjustments, false),
                             motion_blur: crate::effects::motion_blur::MotionBlurs::new(
                                 image_path,
                                 &scaled_adjustments,

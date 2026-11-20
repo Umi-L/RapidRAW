@@ -134,7 +134,7 @@ pub struct GlobalAdjustments {
     pub lut_is_scene_referred: u32,
     pub vignette_center_x: f32,
     pub vignette_center_y: f32,
-    _pad_lut5: f32,
+    pub user_pass_mode: u32,
 
     pub hdr_headroom: f32,
     pub output_peak: f32,
@@ -770,7 +770,7 @@ fn get_global_adjustments_from_json(
         lut_is_scene_referred,
         vignette_center_x: get_val("vignette", "vignetteCenterX", 1.0, Some(0.5)),
         vignette_center_y: get_val("vignette", "vignetteCenterY", 1.0, Some(0.5)),
-        _pad_lut5: 0.0,
+        user_pass_mode: 0,
 
         hdr_headroom: headroom.ratio(),
         output_peak: if headroom.is_hdr() {

@@ -140,6 +140,7 @@ pub fn export_masks_for_image(
                     lut: lut.clone(),
                     roi: None,
                     hsl_probe: false,
+                    user_passes: Default::default(),
                     motion_blur: Default::default(),
                 },
                 "export_mask_image",

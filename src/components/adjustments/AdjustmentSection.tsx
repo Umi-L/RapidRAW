@@ -4,6 +4,7 @@ import CurveGraph from './Curves';
 import ColorPanel from './Color';
 import DetailsPanel from './Details';
 import EffectsPanel from './Effects';
+import ShadersPanel from './Shaders';
 import { ActiveTools } from '../../utils/adjustments';
 import { ToolVisibilityContext } from '../../context/ToolVisibilityContext';
 
@@ -13,6 +14,7 @@ const SECTION_COMPONENTS: Record<string, any> = {
   color: ColorPanel,
   details: DetailsPanel,
   effects: EffectsPanel,
+  shaders: ShadersPanel,
 };
 
 interface AdjustmentSectionProps {

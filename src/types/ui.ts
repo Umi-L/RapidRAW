@@ -72,4 +72,5 @@ export interface CollapsibleSectionsState {
   curves: boolean;
   details: boolean;
   effects: boolean;
+  shaders: boolean;
 }

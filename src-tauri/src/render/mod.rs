@@ -15,3 +15,4 @@ pub mod preview_jpeg;
 pub mod preview_worker;
 pub mod source;
 pub mod uniforms;
+pub mod user_shaders;

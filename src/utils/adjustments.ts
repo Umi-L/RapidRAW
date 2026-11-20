@@ -283,6 +283,14 @@ export interface ParametricCurve {
   red: ParametricCurveSettings;
 }
 
+/** One user shader pass; `file` is relative to the app's shaders folder. */
+export interface ShaderPass {
+  id: string;
+  file: string;
+  enabled: boolean;
+  params: Record<string, number | Array<number>>;
+}
+
 export interface Adjustments {
   activeTools: ActiveTools;
   [index: string]: any;
@@ -396,6 +404,7 @@ export interface Adjustments {
   shadows: number;
   sharpness: number;
   sharpnessThreshold: number;
+  shaderPasses: Array<ShaderPass>;
   showClipping: boolean;
   structure: number;
   temperature: number;
@@ -806,6 +815,7 @@ export const normalizeLoadedAdjustments = (loadedAdjustments: Adjustments): any 
     },
     baselineExposure: loadedAdjustments.baselineExposure ?? false,
     lutIsSceneReferred: loadedAdjustments.lutIsSceneReferred ?? false,
+    shaderPasses: Array.isArray(loadedAdjustments.shaderPasses) ? loadedAdjustments.shaderPasses : [],
     flareAmount: loadedAdjustments.flareAmount ?? INITIAL_ADJUSTMENTS.flareAmount,
     glowAmount: loadedAdjustments.glowAmount ?? INITIAL_ADJUSTMENTS.glowAmount,
     halationAmount: loadedAdjustments.halationAmount ?? INITIAL_ADJUSTMENTS.halationAmount,
@@ -1097,6 +1107,7 @@ export const ADJUSTMENT_GROUPS: Record<string, AdjustmentGroup[]> = {
     },
   ],
   masks: [{ label: 'modals.copyPaste.groups.masks', keys: ['masks'] }],
+  shaders: [{ label: 'modals.copyPaste.groups.shaderPasses', keys: ['shaderPasses'] }],
 };
 
 export const SPEED_EDIT_ADJUSTMENTS = [
@@ -1235,6 +1246,7 @@ export const ADJUSTMENT_SECTIONS: Sections = {
     Effect.MotionBlurLayer,
     Effect.MotionBlurType,
   ],
+  shaders: ['shaderPasses'],
 };
 
 const SECTION_KEY_OWNERS: Record<string, string> = Object.fromEntries(

@@ -11,6 +11,7 @@ const KEY_NAMES: Record<string, string> = {
   lutData: 'LUT Data',
   lutName: 'LUT Name',
   lutSize: 'LUT Size',
+  shaderPasses: 'Shader Passes',
   chromaticAberrationBlueYellow: 'Chromatic Aberration Blue/Yellow',
   chromaticAberrationRedCyan: 'Chromatic Aberration Red/Cyan',
   centré: 'Centré',

@@ -128,6 +128,7 @@ fn process_image_for_export_pipeline(
                     lut: lut.clone(),
                     roi: None,
                     hsl_probe: false,
+                    user_passes: crate::render::user_shaders::gpu::UserPassStack::from_adjustments(js_adjustments, false),
                     motion_blur: crate::effects::motion_blur::MotionBlurs::new(
                         path,
                         js_adjustments,

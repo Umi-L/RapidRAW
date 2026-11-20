@@ -295,6 +295,7 @@
   "lutPath": null,
   "lutSize": 0,
   "lutIsSceneReferred": false,
+  "shaderPasses": [],
   "masks": [],
   "monochromeEnabled": false,
   "monochromeFilm": "neutral",

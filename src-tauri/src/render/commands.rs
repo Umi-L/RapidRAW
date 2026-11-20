@@ -388,6 +388,7 @@ pub async fn generate_uncropped_preview(
                 lut,
                 roi: None,
                 hsl_probe: false,
+                user_passes: crate::render::user_shaders::gpu::UserPassStack::from_adjustments(&adjustments_clone, false),
                 motion_blur: crate::effects::motion_blur::MotionBlurs::new(
                     &path,
                     &adjustments_clone,
@@ -498,6 +499,7 @@ pub async fn generate_preview_for_path(
                 lut,
                 roi: None,
                 hsl_probe: false,
+                user_passes: crate::render::user_shaders::gpu::UserPassStack::from_adjustments(&js_adjustments, false),
                 motion_blur: crate::effects::motion_blur::MotionBlurs::new(
                     &path,
                     &js_adjustments,

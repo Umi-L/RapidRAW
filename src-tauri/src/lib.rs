@@ -211,6 +211,15 @@ pub fn run() {
             _ => {}
         })
         .setup(move |app| {
+            match app.path().app_data_dir() {
+                Ok(data_dir) => {
+                    if let Err(e) = render::user_shaders::init_shaders_dir(&data_dir) {
+                        log::warn!("Could not create the shaders folder: {}", e);
+                    }
+                }
+                Err(e) => log::warn!("Could not resolve the app data folder: {}", e),
+            }
+
             #[cfg(feature = "tethering")]
             {
                 std::thread::spawn(|| {
@@ -643,6 +652,8 @@ pub fn run() {
             adjustments::lut_processing::import_luts,
             adjustments::lut_processing::remove_lut,
             adjustments::lut_processing::generate_lut_previews,
+            render::user_shaders::list_user_shaders,
+            render::user_shaders::open_user_shaders_folder,
             library::presets::fetch_community_presets,
             library::presets::generate_all_community_previews,
             library::file_ops::save_temp_file,

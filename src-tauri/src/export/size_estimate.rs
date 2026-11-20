@@ -167,6 +167,7 @@ pub async fn estimate_export_sizes(
                     lut: lut.clone(),
                     roi: None,
                     hsl_probe: false,
+                    user_passes: crate::render::user_shaders::gpu::UserPassStack::from_adjustments(&adjustments_clone, false),
                     motion_blur: crate::effects::motion_blur::MotionBlurs::new(
                         &loaded_image.path,
                         &adjustments_clone,
@@ -313,6 +314,7 @@ pub async fn estimate_export_sizes(
                     lut: lut.clone(),
                     roi: None,
                     hsl_probe: false,
+                    user_passes: crate::render::user_shaders::gpu::UserPassStack::from_adjustments(&js_adjustments, false),
                     motion_blur: crate::effects::motion_blur::MotionBlurs::new(
                         &source_path_str,
                         &js_adjustments,
