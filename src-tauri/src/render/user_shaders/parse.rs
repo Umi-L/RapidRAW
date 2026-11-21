@@ -10,9 +10,33 @@ pub const PRELUDE: &str = include_str!("prelude.wgsl");
 const PARAMS_BINDING: &str = "@group(0) @binding(3) var<uniform> params: Params;\n";
 
 /// Names of globals the prelude declares; any other bound global in a user file is rejected.
-const PRELUDE_GLOBALS: &[&str] = &["rr_prev", "rr_sampler", "rr", "params"];
+const PRELUDE_GLOBALS: &[&str] = &["rr_prev", "rr_sampler", "rr", "rr_masks", "params"];
 
 pub const VERTEX_ENTRY: &str = "rr_vs";
+
+/// Upper bound for `@iterations`, whatever the shader or its sliders ask for.
+pub const MAX_ITERATIONS: u32 = 1024;
+
+/// Value packed into a `@mask` field when "Whole image" is selected; `rr_mask` returns 1.
+const MASK_WHOLE_IMAGE: i32 = -1;
+/// Value packed when the selected mask is hidden or deleted; `rr_mask` returns 0.
+const MASK_UNAVAILABLE: i32 = -2;
+const MAX_MASK_INDEX: f32 = crate::render::uniforms::MAX_MASKS as f32 - 1.0;
+
+/// How many times a pass runs per tile, from `//! @iterations(count[, scaled])`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Iterations {
+    pub count: IterationCount,
+    /// Multiply by `rr.scale`, so the effect keeps its size between preview and export.
+    pub scaled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum IterationCount {
+    Fixed(f32),
+    /// Read from a `Params` field, so a slider can drive it.
+    Param(String),
+}
 
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -35,6 +59,10 @@ pub struct ParamSpec {
     pub step: f32,
     pub default: Vec<f32>,
     pub toggle: bool,
+    /// An `i32` that selects one of the image's masks; the UI stores the mask's id.
+    pub mask: bool,
+    /// Labels for an integer field shown as a dropdown; the value is the chosen index.
+    pub options: Vec<String>,
     /// Byte offset inside the `Params` uniform buffer.
     #[serde(skip)]
     pub offset: u32,
@@ -49,16 +77,36 @@ pub struct ParsedShader {
     pub params: Vec<ParamSpec>,
     /// Size of the `Params` struct in bytes (0 when the file has none).
     pub params_size: u32,
+    pub iterations: Option<Iterations>,
 }
 
 impl ParsedShader {
     /// Packs slider values (as stored in the adjustments JSON) into the `Params` uniform
     /// buffer layout. Missing or malformed values fall back to the annotation defaults.
-    pub fn pack_params(&self, values: Option<&serde_json::Value>) -> Vec<u8> {
+    ///
+    /// `mask_layers` lists the ids of the image's masks in GPU layer order; a `@mask`
+    /// field stores a mask id and is packed as that mask's layer index.
+    pub fn pack_params(
+        &self,
+        values: Option<&serde_json::Value>,
+        mask_layers: &[String],
+    ) -> Vec<u8> {
         let size = self.params_size.max(16).div_ceil(16) * 16;
         let mut bytes = vec![0u8; size as usize];
         for spec in &self.params {
             let value = values.and_then(|v| v.get(&spec.name));
+            if spec.mask {
+                let layer = match value.and_then(|v| v.as_str()).filter(|id| !id.is_empty()) {
+                    None => MASK_WHOLE_IMAGE,
+                    Some(id) => mask_layers
+                        .iter()
+                        .position(|layer| layer == id)
+                        .map_or(MASK_UNAVAILABLE, |index| index as i32),
+                };
+                let at = spec.offset as usize;
+                bytes[at..at + 4].copy_from_slice(&layer.to_ne_bytes());
+                continue;
+            }
             for i in 0..spec.components as usize {
                 let v = match value {
                     Some(serde_json::Value::Array(items)) => items.get(i).and_then(|x| x.as_f64()),
@@ -69,6 +117,11 @@ impl ParsedShader {
                 }
                 .map(|x| x as f32)
                 .unwrap_or(spec.default[i]);
+                let v = if spec.options.is_empty() {
+                    v
+                } else {
+                    v.round().clamp(0.0, (spec.options.len() - 1) as f32)
+                };
                 let word = match spec.kind {
                     ParamKind::Float => v.to_ne_bytes(),
                     ParamKind::Int => (v.round() as i32).to_ne_bytes(),
@@ -79,6 +132,32 @@ impl ParsedShader {
             }
         }
         bytes
+    }
+
+    /// Number of times to run this pass, given its slider values and the render scale.
+    pub fn iteration_count(&self, values: Option<&serde_json::Value>, scale: f32) -> u32 {
+        let Some(iterations) = &self.iterations else {
+            return 1;
+        };
+        let base = match &iterations.count {
+            IterationCount::Fixed(count) => *count,
+            IterationCount::Param(name) => self
+                .params
+                .iter()
+                .find(|spec| spec.name == *name)
+                .map_or(1.0, |spec| {
+                    values
+                        .and_then(|v| v.get(name))
+                        .and_then(|v| v.as_f64())
+                        .map_or(spec.default[0], |v| v as f32)
+                }),
+        };
+        let count = if iterations.scaled {
+            base * scale
+        } else {
+            base
+        };
+        (count.round().max(1.0) as u32).min(MAX_ITERATIONS)
     }
 }
 
@@ -178,6 +257,7 @@ pub fn parse_user_shader(file_name: &str, user_source: &str) -> Result<ParsedSha
     } else {
         (Vec::new(), 0)
     };
+    let iterations = parse_iterations(file_name, user_source, &params)?;
 
     Ok(ParsedShader {
         source,
@@ -185,6 +265,7 @@ pub fn parse_user_shader(file_name: &str, user_source: &str) -> Result<ParsedSha
         description: description(user_source),
         params,
         params_size,
+        iterations,
     })
 }
 
@@ -231,9 +312,69 @@ fn reflect_params(
             .iter()
             .find(|(field, _)| *field == name)
             .map_or("", |(_, comment)| comment.as_str());
-        specs.push(build_spec(name, kind, components, member.offset, comment));
+        let spec = build_spec(name, kind, components, member.offset, comment);
+        if spec.mask && (spec.kind != ParamKind::Int || spec.components != 1) {
+            return Err(format!(
+                "{file_name}: Params field `{}` uses @mask, which needs type i32.",
+                spec.name
+            ));
+        }
+        if !spec.options.is_empty()
+            && (spec.kind == ParamKind::Float || spec.components != 1 || spec.mask || spec.toggle)
+        {
+            return Err(format!(
+                "{file_name}: Params field `{}` uses @options, which needs type i32 or u32.",
+                spec.name
+            ));
+        }
+        specs.push(spec);
     }
     Ok((specs, span))
+}
+
+/// Reads `//! @iterations(count[, scaled])`, where `count` is a number or a Params field.
+fn parse_iterations(
+    file_name: &str,
+    user_source: &str,
+    params: &[ParamSpec],
+) -> Result<Option<Iterations>, String> {
+    let directive = user_source
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("//!"))
+        .flat_map(parse_annotations)
+        .find(|(key, _)| key == "iterations");
+    let Some((_, args)) = directive else {
+        return Ok(None);
+    };
+    let usage = || {
+        format!(
+            "{file_name}: use `//! @iterations(N)` or `//! @iterations(param)`, optionally with `, scaled`."
+        )
+    };
+    let args = args.ok_or_else(usage)?;
+    let mut parts = args.split(',').map(str::trim);
+    let first = parts.next().filter(|p| !p.is_empty()).ok_or_else(usage)?;
+    let scaled = match parts.next() {
+        None => false,
+        Some("scaled") => true,
+        Some(_) => return Err(usage()),
+    };
+    let count = match first.parse::<f32>() {
+        Ok(count) if count >= 1.0 => IterationCount::Fixed(count),
+        Ok(_) => return Err(format!("{file_name}: @iterations must be at least 1.")),
+        Err(_) => {
+            let usable = params
+                .iter()
+                .any(|spec| spec.name == first && spec.components == 1 && !spec.mask);
+            if !usable {
+                return Err(format!(
+                    "{file_name}: @iterations({first}) must name a scalar field of struct Params."
+                ));
+            }
+            IterationCount::Param(first.to_string())
+        }
+    };
+    Ok(Some(Iterations { count, scaled }))
 }
 
 fn build_spec(
@@ -253,6 +394,8 @@ fn build_spec(
         step: if kind == ParamKind::Float { 0.01 } else { 1.0 },
         default: Vec::new(),
         toggle: false,
+        mask: false,
+        options: Vec::new(),
         offset,
     };
     let numbers = |args: &str| -> Vec<f32> {
@@ -283,8 +426,20 @@ fn build_spec(
                 }
             }
             "toggle" => spec.toggle = true,
+            "mask" => spec.mask = true,
+            "options" => spec.options = quoted_strings(&args),
             _ => {}
         }
+    }
+    if spec.mask {
+        spec.min = MASK_UNAVAILABLE as f32;
+        spec.max = MAX_MASK_INDEX;
+        defaults = vec![MASK_WHOLE_IMAGE as f32];
+    }
+    if !spec.options.is_empty() {
+        spec.min = 0.0;
+        spec.max = (spec.options.len() - 1) as f32;
+        spec.step = 1.0;
     }
     if spec.toggle {
         spec.min = 0.0;
@@ -300,6 +455,16 @@ fn build_spec(
         })
         .collect();
     spec
+}
+
+/// The `"quoted"` strings in an annotation's arguments, as in `@options("A", "B")`.
+fn quoted_strings(args: &str) -> Vec<String> {
+    args.split('"')
+        .skip(1)
+        .step_by(2)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// `@name` or `@name(args)` tokens from a trailing field comment. Parentheses inside
@@ -372,6 +537,7 @@ fn description(user_source: &str) -> String {
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix("//!"))
         .map(str::trim)
+        .filter(|line| !line.starts_with('@'))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -404,16 +570,7 @@ mod tests {
 
     #[test]
     fn bundled_examples_parse() {
-        for (name, src) in [
-            (
-                "example_vignette.wgsl",
-                include_str!("examples/example_vignette.wgsl"),
-            ),
-            (
-                "example_glow.wgsl",
-                include_str!("examples/example_glow.wgsl"),
-            ),
-        ] {
+        for (name, src) in crate::render::user_shaders::EXAMPLES.iter().copied() {
             let parsed = parse_user_shader(name, src).unwrap_or_else(|e| panic!("{e}"));
             assert!(!parsed.params.is_empty(), "{name} should expose params");
             assert!(
@@ -463,7 +620,7 @@ mod tests {
         let src = "struct Params {\n    a: f32, // @default(0.5)\n    tint: vec3f, // @default(1, 2, 3)\n    n: i32,\n}\n@fragment\nfn main(in: RRInput) -> @location(0) vec4f {\n    return vec4f(params.tint * params.a, f32(params.n));\n}\n";
         let parsed = parse_user_shader("p.wgsl", src).unwrap();
         let values = serde_json::json!({ "tint": [4.0, 5.0], "n": 7.4 });
-        let bytes = parsed.pack_params(Some(&values));
+        let bytes = parsed.pack_params(Some(&values), &[]);
         assert_eq!(bytes.len(), 32);
         let f = |at: usize| f32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
         let i = |at: usize| i32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
@@ -538,6 +695,116 @@ mod tests {
                 .any(|ep| ep.name == "user_encode")
         );
         assert!(module.entry_points.iter().any(|ep| ep.name == "main"));
+    }
+
+    const MASKED: &str = "//! Masked effect.\n//! @iterations(steps, scaled)\nstruct Params {\n    region: i32, // @mask @label(\"Region\")\n    steps: f32, // @range(1, 64) @default(8)\n}\n@fragment\nfn main(in: RRInput) -> @location(0) vec4f {\n    return rr_color(in) * rr_mask(params.region, vec2i(rr_px(in))) * f32(rr.iteration);\n}\n";
+
+    #[test]
+    fn mask_params_pack_layer_indices() {
+        let parsed = parse_user_shader("m.wgsl", MASKED).unwrap();
+        let region = parsed.params.iter().find(|p| p.name == "region").unwrap();
+        assert!(region.mask);
+        assert_eq!(region.label, "Region");
+        let layers = vec!["a".to_string(), "b".to_string()];
+        let packed = |values: serde_json::Value| {
+            let bytes = parsed.pack_params(Some(&values), &layers);
+            i32::from_ne_bytes(bytes[0..4].try_into().unwrap())
+        };
+        assert_eq!(packed(serde_json::json!({ "region": "b" })), 1);
+        assert_eq!(
+            packed(serde_json::json!({ "region": "gone" })),
+            MASK_UNAVAILABLE
+        );
+        assert_eq!(
+            packed(serde_json::json!({ "region": "" })),
+            MASK_WHOLE_IMAGE
+        );
+        assert_eq!(packed(serde_json::json!({})), MASK_WHOLE_IMAGE);
+    }
+
+    #[test]
+    fn mask_param_must_be_i32() {
+        let src = "struct Params {\n    region: f32, // @mask\n}\n@fragment\nfn main(in: RRInput) -> @location(0) vec4f {\n    return rr_color(in) * params.region;\n}\n";
+        let err = parse_user_shader("m.wgsl", &src).unwrap_err();
+        assert!(err.contains("needs type i32"), "got: {err}");
+    }
+
+    #[test]
+    fn iterations_from_param_and_scale() {
+        let parsed = parse_user_shader("m.wgsl", MASKED).unwrap();
+        assert_eq!(
+            parsed.description, "Masked effect.",
+            "directives are not description"
+        );
+        assert_eq!(
+            parsed.iteration_count(None, 1.0),
+            8,
+            "falls back to the default"
+        );
+        let values = serde_json::json!({ "steps": 10.0 });
+        assert_eq!(parsed.iteration_count(Some(&values), 2.5), 25);
+        let huge = serde_json::json!({ "steps": 1.0e9 });
+        assert_eq!(parsed.iteration_count(Some(&huge), 1.0), MAX_ITERATIONS);
+
+        let fixed = MASKED.replace("@iterations(steps, scaled)", "@iterations(3)");
+        let parsed = parse_user_shader("m.wgsl", &fixed).unwrap();
+        assert_eq!(parsed.iteration_count(None, 4.0), 3);
+
+        let none = parse_user_shader("min.wgsl", MINIMAL).unwrap();
+        assert_eq!(none.iteration_count(None, 4.0), 1);
+    }
+
+    #[test]
+    fn iterations_must_name_a_param() {
+        let src = MASKED.replace("@iterations(steps, scaled)", "@iterations(nope)");
+        let err = parse_user_shader("m.wgsl", &src).unwrap_err();
+        assert!(err.contains("@iterations(nope)"), "got: {err}");
+    }
+
+    #[test]
+    fn bundled_pixel_sort_example_parses() {
+        let src = include_str!("examples/pixel_sort_example.wgsl");
+        let parsed =
+            parse_user_shader("pixel_sort_example.wgsl", src).unwrap_or_else(|e| panic!("{e}"));
+        assert!(parsed.params.iter().any(|p| p.mask));
+        assert!(parsed.iterations.is_some());
+    }
+
+    #[test]
+    fn options_params_clamp_to_choices() {
+        let src = "struct Params {
+    mode: u32, // @options(\"Luma, bright\", \"Hue\", \"Red\") @default(1)
+}
+@fragment
+fn main(in: RRInput) -> @location(0) vec4f {
+    return vec4f(f32(params.mode));
+}
+";
+        let parsed = parse_user_shader("o.wgsl", src).unwrap();
+        let mode = &parsed.params[0];
+        assert_eq!(mode.options, vec!["Luma, bright", "Hue", "Red"]);
+        assert_eq!((mode.min, mode.max, mode.default.clone()), (0.0, 2.0, vec![1.0]));
+        let word = |values: serde_json::Value| {
+            let bytes = parsed.pack_params(Some(&values), &[]);
+            u32::from_ne_bytes(bytes[0..4].try_into().unwrap())
+        };
+        assert_eq!(word(serde_json::json!({})), 1);
+        assert_eq!(word(serde_json::json!({ "mode": 2 })), 2);
+        assert_eq!(word(serde_json::json!({ "mode": 9 })), 2);
+    }
+
+    #[test]
+    fn options_param_must_be_integer() {
+        let src = "struct Params {
+    m: f32, // @options(\"A\", \"B\")
+}
+@fragment
+fn main(in: RRInput) -> @location(0) vec4f {
+    return vec4f(params.m);
+}
+";
+        let err = parse_user_shader("o.wgsl", src).unwrap_err();
+        assert!(err.contains("needs type i32 or u32"), "got: {err}");
     }
 
     #[test]

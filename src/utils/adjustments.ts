@@ -288,7 +288,8 @@ export interface ShaderPass {
   id: string;
   file: string;
   enabled: boolean;
-  params: Record<string, number | Array<number>>;
+  /** Slider values; a `@mask` field holds a mask id, or "" for the whole image. */
+  params: Record<string, number | Array<number> | string>;
 }
 
 export interface Adjustments {

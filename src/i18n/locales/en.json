@@ -248,14 +248,18 @@
     "shaders": {
       "addPass": "Add pass…",
       "empty": "Add a pass to run your own WGSL shader after all other edits.",
+      "hiddenMask": "{{name}} (hidden)",
       "hint": "Runs after all other edits, top to bottom.",
+      "mask": "Mask",
       "missingFile": "{{file}} is not in the shaders folder.",
+      "missingMask": "Deleted mask",
       "moveDown": "Move down",
       "moveUp": "Move up",
       "noShaders": "No .wgsl files in the shaders folder yet.",
       "openFolder": "Open shaders folder",
       "reload": "Reload shaders from disk",
-      "remove": "Remove pass"
+      "remove": "Remove pass",
+      "wholeImage": "Whole image"
     }
   },
   "contextMenus": {

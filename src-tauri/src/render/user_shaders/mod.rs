@@ -17,29 +17,63 @@ use parse::{ParamSpec, ParsedShader, parse_user_shader};
 
 static SHADERS_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-/// Written once, when the folder is first created. Never overwritten afterwards.
-const SEED_FILES: &[(&str, &str)] = &[
-    ("README.md", include_str!("examples/README.md")),
-    (
-        "example_vignette.wgsl",
-        include_str!("examples/example_vignette.wgsl"),
-    ),
-    (
-        "example_glow.wgsl",
-        include_str!("examples/example_glow.wgsl"),
-    ),
+/// The reference doc; owned by the app and rewritten on every launch so it stays current.
+const README: &str = include_str!("examples/README.md");
+
+/// Example shaders, each written once. Names already listed in `SEEDED_LIST` are never
+/// written again, so a user's edits and deletions stick while new examples still arrive.
+///
+/// To add an example: drop `<name>_example.wgsl` into `examples/` and add its file name
+/// to the list below. The `bundled_examples_parse` test then checks it automatically.
+macro_rules! examples {
+    ($($file:literal),* $(,)?) => {
+        &[$(($file, include_str!(concat!("examples/", $file)))),*]
+    };
+}
+
+const EXAMPLES: &[(&str, &str)] = examples![
+    "vignette_example.wgsl",
+    "glow_example.wgsl",
+    "pixel_sort_example.wgsl",
+    "duotone_example.wgsl",
+    "chromatic_aberration_example.wgsl",
+    "pixelize_example.wgsl",
+    "dither_example.wgsl",
+    "crt_example.wgsl",
+    "halftone_example.wgsl",
 ];
 
-/// Creates `<app data>/shaders` (seeding the examples on first run) and remembers it so
-/// render paths can resolve files without an `AppHandle`.
+const SEEDED_LIST: &str = ".seeded-examples";
+
+/// Creates `<app data>/shaders`, refreshes the README, writes examples not seeded before,
+/// and remembers the folder so render paths can resolve files without an `AppHandle`.
 pub fn init_shaders_dir(app_data_dir: &Path) -> std::io::Result<PathBuf> {
     let dir = app_data_dir.join("shaders");
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir)?;
-        for (name, contents) in SEED_FILES {
-            std::fs::write(dir.join(name), contents)?;
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("README.md"), README)?;
+
+    let list_path = dir.join(SEEDED_LIST);
+    let mut seeded: Vec<String> = std::fs::read_to_string(&list_path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let mut changed = false;
+    for (name, contents) in EXAMPLES {
+        if seeded.iter().any(|s| s == name) {
+            continue;
         }
+        let path = dir.join(name);
+        if !path.exists() {
+            std::fs::write(&path, contents)?;
+        }
+        seeded.push(name.to_string());
+        changed = true;
     }
+    if changed {
+        std::fs::write(&list_path, seeded.join("\n") + "\n")?;
+    }
+
     let _ = SHADERS_DIR.set(dir.clone());
     Ok(dir)
 }
@@ -220,5 +254,26 @@ mod tests {
         assert!(resolve_shader_file("C:/glow.wgsl").is_none());
         assert!(resolve_shader_file("/glow.wgsl").is_none());
         assert!(resolve_shader_file("glow.txt").is_none());
+    }
+}
+
+#[cfg(test)]
+mod probe_tmp {
+    #[test]
+    fn probe_real_sidecar() {
+        let appdata = std::env::var("APPDATA").unwrap();
+        let _ = super::SHADERS_DIR.set(std::path::PathBuf::from(format!("{appdata}/io.github.CyberTimon.RapidRAW/shaders")));
+        let home = std::env::var("USERPROFILE").unwrap();
+        let sidecar = format!("{home}/OneDrive/Pictures/Walk Oct 29 w mom/DSC02857.ARW.rrdata");
+        let meta: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(sidecar).unwrap()).unwrap();
+        let adjustments = &meta["adjustments"];
+        for file in ["vignette_example.wgsl", "glow_example.wgsl", "pixel_sort_example.wgsl"] {
+            let path = super::resolve_shader_file(file).unwrap();
+            let r = super::load_shader(&path).map(|(_, r)| r.map(|s| s.params.len()));
+            eprintln!("PROBE {file}: {:?}", r);
+        }
+        let stack = super::gpu::UserPassStack::from_adjustments(adjustments, true);
+        eprintln!("PROBE passes: {}", stack.passes.len());
+        eprintln!("PROBE tool active: {}", crate::render::adjustment_utils::is_tool_active(adjustments, "shaders"));
     }
 }

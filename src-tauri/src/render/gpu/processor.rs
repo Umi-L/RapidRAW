@@ -1790,6 +1790,7 @@ impl GpuProcessor {
                         &mut main_encoder,
                         &user_passes,
                         textures,
+                        mask_texture_view,
                         crate::render::user_shaders::gpu::TileInfo {
                             image_size: (width, height),
                             origin: (input_x_start, input_y_start),
@@ -1798,6 +1799,7 @@ impl GpuProcessor {
                             hdr_headroom: adjustments.global.hdr_headroom,
                             is_preview: request.user_passes.is_preview,
                             is_raw: adjustments.global.is_raw_image == 1,
+                            mask_count: request.mask_bitmaps.len().min(MAX_MASKS) as u32,
                         },
                     );
 

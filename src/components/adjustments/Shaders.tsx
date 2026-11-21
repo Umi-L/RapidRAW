@@ -25,6 +25,10 @@ interface ShaderParamSpec {
   step: number;
   default: Array<number>;
   toggle: boolean;
+  /** An `i32` that selects one of the image's masks; its value is the mask id. */
+  mask: boolean;
+  /** Labels for an integer field shown as a dropdown; its value is the chosen index. */
+  options: Array<string>;
 }
 
 /** Mirrors `UserShaderInfo` in src-tauri/src/render/user_shaders/mod.rs. */
@@ -41,7 +45,10 @@ const COMPONENT_NAMES = ['x', 'y', 'z', 'w'];
 
 const defaultParams = (shader: UserShaderInfo): ShaderPass['params'] =>
   Object.fromEntries(
-    shader.params.map((spec) => [spec.name, spec.components === 1 ? spec.default[0] : [...spec.default]]),
+    shader.params.map((spec) => [
+      spec.name,
+      spec.mask ? '' : spec.components === 1 ? spec.default[0] : [...spec.default],
+    ]),
   );
 
 const paramValue = (pass: ShaderPass, spec: ShaderParamSpec, component: number): number => {
@@ -49,6 +56,11 @@ const paramValue = (pass: ShaderPass, spec: ShaderParamSpec, component: number):
   if (Array.isArray(value)) return value[component] ?? spec.default[component];
   if (typeof value === 'number' && spec.components === 1) return value;
   return spec.default[component];
+};
+
+const maskValue = (pass: ShaderPass, spec: ShaderParamSpec): string => {
+  const value = pass.params?.[spec.name];
+  return typeof value === 'string' ? value : '';
 };
 
 interface ShadersPanelProps {
@@ -112,6 +124,25 @@ function ShadersPanel({ adjustments, setAdjustments, onDragStateChange }: Shader
       [next[index], next[target]] = [next[target], next[index]];
       return next;
     });
+
+  // "Whole image" first, then every mask by name; hidden ones still listed so a choice
+  // survives toggling the mask off (the shader then sees no coverage).
+  const maskOptions = useMemo(
+    () => [
+      { label: t('adjustments.shaders.wholeImage'), value: '' },
+      ...(adjustments.masks ?? []).map((mask, index) => {
+        const name = mask.name || `${t('adjustments.shaders.mask')} ${index + 1}`;
+        const hidden = !mask.visible || mask.subMasks.length === 0;
+        return { label: hidden ? t('adjustments.shaders.hiddenMask', { name }) : name, value: mask.id };
+      }),
+    ],
+    [adjustments.masks, t],
+  );
+
+  const setMaskParam = (passId: string, spec: ShaderParamSpec, maskId: string) =>
+    updatePasses((list) =>
+      list.map((pass) => (pass.id === passId ? { ...pass, params: { ...pass.params, [spec.name]: maskId } } : pass)),
+    );
 
   const setParam = (passId: string, spec: ShaderParamSpec, component: number, value: number) =>
     updatePasses((list) =>
@@ -196,30 +227,59 @@ function ShadersPanel({ adjustments, setAdjustments, onDragStateChange }: Shader
             {!isCollapsed && shader && shader.params.length > 0 && (
               <div className={clsx('pt-2 transition-opacity duration-300', !pass.enabled && HIDDEN_CONTENT_CLASS)}>
                 {shader.params.flatMap((spec) =>
-                  spec.toggle
+                  spec.mask
                     ? [
-                        <Switch
-                          key={spec.name}
-                          className="px-1 py-1"
-                          label={spec.label}
-                          checked={paramValue(pass, spec, 0) !== 0}
-                          onChange={(checked) => setParam(pass.id, spec, 0, checked ? 1 : 0)}
-                        />,
+                        <div key={spec.name} className="flex items-center gap-2 px-1 py-1">
+                          <Text variant={TextVariants.label} className="shrink-0">
+                            {spec.label}
+                          </Text>
+                          <Dropdown<string>
+                            className="grow min-w-0"
+                            value={maskValue(pass, spec)}
+                            placeholder={t('adjustments.shaders.missingMask')}
+                            options={maskOptions}
+                            onChange={(maskId) => setMaskParam(pass.id, spec, maskId)}
+                          />
+                        </div>,
                       ]
-                    : Array.from({ length: spec.components }, (_, component) => (
-                        <Slider
-                          key={`${spec.name}.${component}`}
-                          label={spec.components === 1 ? spec.label : `${spec.label} ${COMPONENT_NAMES[component]}`}
-                          min={spec.min}
-                          max={spec.max}
-                          step={spec.step}
-                          value={paramValue(pass, spec, component)}
-                          defaultValue={spec.default[component]}
-                          fillOrigin="min"
-                          onChange={(e) => setParam(pass.id, spec, component, Number(e.target.value))}
-                          onDragStateChange={onDragStateChange}
-                        />
-                      )),
+                    : spec.options.length > 0
+                      ? [
+                          <div key={spec.name} className="flex items-center gap-2 px-1 py-1">
+                            <Text variant={TextVariants.label} className="shrink-0">
+                              {spec.label}
+                            </Text>
+                            <Dropdown<number>
+                              className="grow min-w-0"
+                              value={paramValue(pass, spec, 0)}
+                              options={spec.options.map((label, value) => ({ label, value }))}
+                              onChange={(value) => setParam(pass.id, spec, 0, value)}
+                            />
+                          </div>,
+                        ]
+                    : spec.toggle
+                      ? [
+                          <Switch
+                            key={spec.name}
+                            className="px-1 py-1"
+                            label={spec.label}
+                            checked={paramValue(pass, spec, 0) !== 0}
+                            onChange={(checked) => setParam(pass.id, spec, 0, checked ? 1 : 0)}
+                          />,
+                        ]
+                      : Array.from({ length: spec.components }, (_, component) => (
+                          <Slider
+                            key={`${spec.name}.${component}`}
+                            label={spec.components === 1 ? spec.label : `${spec.label} ${COMPONENT_NAMES[component]}`}
+                            min={spec.min}
+                            max={spec.max}
+                            step={spec.step}
+                            value={paramValue(pass, spec, component)}
+                            defaultValue={spec.default[component]}
+                            fillOrigin="min"
+                            onChange={(e) => setParam(pass.id, spec, component, Number(e.target.value))}
+                            onDragStateChange={onDragStateChange}
+                          />
+                        )),
                 )}
               </div>
             )}
